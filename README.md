@@ -61,13 +61,15 @@ To publish:
    website serves the updated JSON and that its archive links are accessible.
 
 The workflow builds the ZIPs once and hashes their final bytes. It uploads them
-with `application/zip`, uses GitHub's returned versioned download URLs, and
-generates the discovery index with `sha256:` digests and descriptions from skill
-frontmatter. ZIPs and `index.json` are staged in a draft before publication,
-supporting immutable releases. The workflow then downloads every asset without
-authentication and checks its content type, size, and digest. Only successful
-verification exports the website handoff artifact. The website is not updated
-automatically.
+with `application/zip` and generates the discovery index with versioned download
+URLs, `sha256:` digests, and descriptions from skill frontmatter. ZIPs and
+`index.json` are staged in a draft before publication, supporting immutable
+releases. When GitHub returns temporary `untagged-*` draft URLs, the staged index
+uses their final version-tag URLs. After publishing, the workflow refreshes asset
+metadata and confirms the final URLs and asset identities. It then downloads
+every asset without authentication and checks its content type, size, and digest.
+Only successful verification exports the website handoff artifact. The website
+is not updated automatically.
 
 The repository must be public. The workflow uses its `GITHUB_TOKEN` with
 `contents: write`; no separate release secret is needed. Pinned action revisions
@@ -76,6 +78,12 @@ can be reused on a rerun. Conflicting or incomplete assets stop the run; publish
 assets are never replaced. Resolve an incomplete draft upload or use a new tag.
 If a run fails after publication, rerun the same tag to verify it; do not update
 the website until verification succeeds.
+
+The workflow checks out its requested tag, including the release tooling. If a
+failure requires a tooling fix, commit and push the fix before creating a new
+version tag (for example, `v1.0.1`). Rerunning an older tag still runs the old
+tooling. An unpublished draft from a failed run does not prevent releasing a new
+tag; leave its tag unchanged.
 
 ## Local development
 

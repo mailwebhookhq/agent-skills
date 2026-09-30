@@ -35,6 +35,7 @@ REPO_URL = f"{API}/repos/{REPOSITORY}"
 RELEASE_URL = f"{REPO_URL}/releases/7"
 UPLOAD_URL = f"{UPLOADS}/repos/{REPOSITORY}/releases/7/assets"
 TAG = "v1.2.3"
+DRAFT_TAG = "untagged-0123456789abcdef0123"
 TOKEN = "fixture-token-not-a-secret"
 
 
@@ -55,11 +56,13 @@ def release_json(*, draft: bool = True) -> dict[str, Any]:
         "tag_name": TAG,
         "draft": draft,
         "upload_url": UPLOAD_URL + "{?name,label}",
-        "html_url": f"{SERVER}/{REPOSITORY}/releases/tag/{TAG}",
+        "html_url": f"{SERVER}/{REPOSITORY}/releases/tag/{DRAFT_TAG if draft else TAG}",
     }
 
 
-def asset_json(filename: str, data: bytes, *, asset_id: int = 11) -> dict[str, Any]:
+def asset_json(
+    filename: str, data: bytes, *, asset_id: int = 11, draft: bool = False
+) -> dict[str, Any]:
     """Represent a successful upload, binding its metadata to supplied bytes."""
     return {
         "id": asset_id,
@@ -68,7 +71,9 @@ def asset_json(filename: str, data: bytes, *, asset_id: int = 11) -> dict[str, A
         "content_type": "application/zip" if filename.endswith(".zip") else "application/json",
         "size": len(data),
         "digest": digest(data),
-        "browser_download_url": download_url(filename),
+        "browser_download_url": download_url(filename).replace(
+            f"/download/{TAG}/", f"/download/{DRAFT_TAG if draft else TAG}/"
+        ),
     }
 
 
@@ -169,7 +174,7 @@ def add_upload(
 
     http.post(
         UPLOAD_URL,
-        json=result or asset_json(filename, data),
+        json=result or asset_json(filename, data, draft=True),
         status=201,
         match=[
             matchers.query_param_matcher({"name": filename}),
@@ -197,12 +202,20 @@ def add_public_downloads(
     )
 
 
+def add_publication(http: responses.RequestsMock, assets: list[dict[str, Any]]) -> None:
+    """Expose final asset URLs only in the metadata fetched after publication."""
+    http.patch(RELEASE_URL, json=release_json(draft=False))
+    http.get(f"{RELEASE_URL}/assets", json=assets)
+
+
 def add_new_release(http: responses.RequestsMock, artifact: ArchiveArtifact, data: bytes) -> None:
     """Stage a complete new draft release and its publish response."""
     add_prepare(http)
     add_upload(http, artifact.filename, data)
     add_upload(http, "index.json", index_bytes(artifact))
-    http.patch(RELEASE_URL, json=release_json(draft=False))
+    add_publication(
+        http, [asset_json(artifact.filename, data), asset_json("index.json", index_bytes(artifact))]
+    )
 
 
 def test_publish_uploads_exact_bytes_before_exposing_verified_index(
@@ -241,6 +254,7 @@ def test_publish_uploads_exact_bytes_before_exposing_verified_index(
         ("POST", f"{UPLOAD_URL}?name={artifact.filename}"),
         ("POST", f"{UPLOAD_URL}?name=index.json"),
         ("PATCH", RELEASE_URL),
+        ("GET", f"{RELEASE_URL}/assets?per_page=100&page=1"),
         ("GET", download_url(artifact.filename)),
         ("GET", download_url("index.json")),
     ]
@@ -265,12 +279,15 @@ def test_identical_release_retry_reuses_assets_without_reuploading(
         http,
         existing_release=release_json(draft=draft),
         assets=[
-            asset_json(artifact.filename, data),
-            asset_json("index.json", index_bytes(artifact)),
+            asset_json(artifact.filename, data, draft=draft),
+            asset_json("index.json", index_bytes(artifact), draft=draft),
         ],
     )
     if draft:
-        http.patch(RELEASE_URL, json=release_json(draft=False))
+        add_publication(
+            http,
+            [asset_json(artifact.filename, data), asset_json("index.json", index_bytes(artifact))],
+        )
     add_public_downloads(http, artifact, data)
     output = tmp_path / "index.json"
 
@@ -279,6 +296,117 @@ def test_identical_release_retry_reuses_assets_without_reuploading(
     mutations = [call.request.method for call in http.calls if call.request.method != "GET"]
     assert mutations == (["PATCH"] if draft else [])
     assert output.read_bytes() == index_bytes(artifact)
+
+
+@pytest.mark.parametrize("existing_zip", [False, True])
+def test_temporary_draft_urls_are_resolved_before_staging_index(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    tmp_path: Path,
+    existing_zip: bool,
+) -> None:
+    """Publish new drafts and recover ZIP-only drafts without exporting temporary URLs."""
+    artifact, data = archive
+    draft_zip = asset_json(artifact.filename, data, draft=True)
+    add_prepare(
+        http,
+        existing_release=release_json() if existing_zip else None,
+        assets=[draft_zip] if existing_zip else [],
+    )
+    if not existing_zip:
+        add_upload(http, artifact.filename, data, result=draft_zip)
+    add_upload(
+        http,
+        "index.json",
+        index_bytes(artifact),
+        result=asset_json("index.json", index_bytes(artifact), asset_id=12, draft=True),
+    )
+    add_publication(
+        http,
+        [
+            asset_json(artifact.filename, data),
+            asset_json("index.json", index_bytes(artifact), asset_id=12),
+        ],
+    )
+    add_public_downloads(http, artifact, data)
+    output = tmp_path / "index.json"
+
+    publish_archives(client, [artifact], tmp_path, TAG, output)
+
+    assert output.read_bytes() == index_bytes(artifact)
+    assert DRAFT_TAG.encode() not in output.read_bytes()
+    assert not any(DRAFT_TAG in call.request.url for call in http.calls)
+    uploads = [call.request.url for call in http.calls if call.request.method == "POST"]
+    assert (f"{UPLOAD_URL}?name={artifact.filename}" in uploads) is not existing_zip
+    assert sum(call.request.method == "PATCH" for call in http.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("id", 99),
+        ("digest", "sha256:" + "0" * 64),
+        ("state", "starter"),
+        ("content_type", "text/html"),
+        ("size", 0),
+        ("browser_download_url", download_url("sample-skill.zip").replace(TAG, DRAFT_TAG)),
+        ("browser_download_url", download_url("sample-skill.zip").replace(TAG, "v9.9.9")),
+        ("browser_download_url", "https://untrusted.example/sample-skill.zip"),
+    ],
+)
+def test_changed_asset_after_publication_withholds_handoff(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    """Require final GitHub metadata to confirm the staged identity, URL, and bytes."""
+    artifact, data = archive
+    add_prepare(http)
+    add_upload(http, artifact.filename, data)
+    add_upload(http, "index.json", index_bytes(artifact))
+    changed = asset_json(artifact.filename, data)
+    changed[field] = value
+    add_publication(http, [changed, asset_json("index.json", index_bytes(artifact))])
+    output = tmp_path / "index.json"
+
+    with pytest.raises(PublishError):
+        publish_archives(client, [artifact], tmp_path, TAG, output)
+
+    assert not output.exists()
+    assert not any(call.request.url.startswith(SERVER) for call in http.calls)
+    assert sum(call.request.method == "PATCH" for call in http.calls) == 1
+
+
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_changed_asset_inventory_after_publication_withholds_handoff(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    tmp_path: Path,
+    unexpected: bool,
+) -> None:
+    """Reject missing or newly added assets after publication without uploading again."""
+    artifact, data = archive
+    add_prepare(http)
+    add_upload(http, artifact.filename, data)
+    add_upload(http, "index.json", index_bytes(artifact))
+    final_assets = [asset_json(artifact.filename, data)]
+    if unexpected:
+        final_assets.extend(
+            [asset_json("index.json", index_bytes(artifact)), asset_json("extra.zip", b"extra")]
+        )
+    add_publication(http, final_assets)
+    output = tmp_path / "index.json"
+
+    with pytest.raises(PublishError, match="assets differ"):
+        publish_archives(client, [artifact], tmp_path, TAG, output)
+
+    assert not output.exists()
+    assert http.calls[-1].request.method == "GET"
 
 
 @pytest.mark.parametrize("private", [True, None, "false"])
@@ -658,7 +786,7 @@ def test_index_preserves_returned_versioned_download_url(
     add_prepare(http)
     add_upload(http, artifact.filename, data, result=upload_result)
     add_upload(http, "index.json", expected_index)
-    http.patch(RELEASE_URL, json=release_json(draft=False))
+    add_publication(http, [upload_result, asset_json("index.json", expected_index)])
     # Requests normalizes unreserved URL escapes on the wire. The index must
     # still retain the versioned URL supplied by the GitHub metadata response.
     http.get(download_url(artifact.filename), body=data, content_type="application/zip")
@@ -732,6 +860,51 @@ def test_nonversioned_or_untrusted_download_urls_reject_before_publication(
     add_prepare(http, existing_release=release_json(), assets=[asset])
     with pytest.raises(PublishError, match="versioned release URL"):
         publish_archives(client, [artifact], tmp_path, TAG, tmp_path / "index.json")
+    assert all(call.request.method == "GET" for call in http.calls)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("asset", download_url("sample-skill.zip").replace(TAG, "untagged-another")),
+        ("asset", download_url("another.zip").replace(TAG, DRAFT_TAG)),
+        (
+            "asset",
+            download_url("sample-skill.zip").replace(TAG, DRAFT_TAG) + "?unexpected=true",
+        ),
+        (
+            "asset",
+            download_url("sample-skill.zip").replace(TAG, DRAFT_TAG) + "#unexpected",
+        ),
+        ("release", f"https://untrusted.example/{REPOSITORY}/releases/tag/{DRAFT_TAG}"),
+        ("release", f"{SERVER}/another/repository/releases/tag/{DRAFT_TAG}"),
+        ("release", f"{SERVER}/{REPOSITORY}/releases/tag/{DRAFT_TAG}?unexpected=true"),
+        ("release", f"{SERVER}/{REPOSITORY}/releases/tag/{DRAFT_TAG}#unexpected"),
+    ],
+)
+def test_temporary_url_must_match_its_draft_release(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    """Resolve only this draft's exact asset path on the trusted GitHub origin."""
+    artifact, data = archive
+    release = release_json()
+    asset = asset_json(artifact.filename, data, draft=True)
+    if field == "asset":
+        asset["browser_download_url"] = replacement
+    else:
+        release["html_url"] = replacement
+    add_prepare(http, existing_release=release, assets=[asset])
+    output = tmp_path / "index.json"
+
+    with pytest.raises(PublishError, match="versioned release URL"):
+        publish_archives(client, [artifact], tmp_path, TAG, output)
+
+    assert not output.exists()
     assert all(call.request.method == "GET" for call in http.calls)
 
 

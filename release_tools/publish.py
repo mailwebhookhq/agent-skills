@@ -251,24 +251,58 @@ class GitHubClient:
                     "Accept": "application/octet-stream",
                 },
             )
-        url = urlsplit(str(asset.browser_download_url))
-        expected_origin = urlsplit(self.settings.server_url)
-        expected_download = (
-            f"/{self.settings.repository}/releases/download/{release.tag_name}/{filename}"
+        asset = asset.model_copy(
+            update={"browser_download_url": self._versioned_download_url(release, asset)}
         )
-        if (
-            url.scheme != "https"
-            or url.netloc != expected_origin.netloc
-            or unquote(url.path) != expected_download
-            or url.query
-            or url.fragment
-        ):
-            raise PublishError(f"Asset {filename} does not have a versioned release URL")
         assets[filename] = asset
         return asset
 
-    def publish(self, release: Release) -> None:
-        """Publish only after every ZIP and the discovery index have been uploaded."""
+    def _versioned_download_url(self, release: Release, asset: Asset) -> HttpUrl:
+        """Resolve a draft's temporary URL for staging, retaining final URL validation.
+
+        GitHub can use an opaque ``untagged-*`` slug until publication. Accept
+        that slug only when it matches this draft's release page. The predicted
+        final URL must be confirmed again after publication and downloaded
+        anonymously before the staged discovery index can be exported.
+        """
+        tag = validate_tag(release.tag_name)
+        url = urlsplit(str(asset.browser_download_url))
+        expected_origin = urlsplit(self.settings.server_url)
+        download_prefix = f"/{self.settings.repository}/releases/download/"
+        expected_download = f"{download_prefix}{tag}/{asset.name}"
+        if (
+            url.scheme != "https"
+            or url.netloc != expected_origin.netloc
+            or url.query
+            or url.fragment
+        ):
+            raise PublishError(f"Asset {asset.name} does not have a versioned release URL")
+        if unquote(url.path) == expected_download:
+            return asset.browser_download_url
+
+        page = urlsplit(str(release.html_url))
+        page_prefix = f"/{self.settings.repository}/releases/tag/"
+        draft_slug = unquote(page.path).removeprefix(page_prefix)
+        if (
+            not release.draft
+            or page.scheme != "https"
+            or page.netloc != expected_origin.netloc
+            or page.query
+            or page.fragment
+            or not re.fullmatch(r"untagged-[A-Za-z0-9]+", draft_slug)
+            or unquote(url.path) != f"{download_prefix}{draft_slug}/{asset.name}"
+        ):
+            raise PublishError(f"Asset {asset.name} does not have a versioned release URL")
+        return HttpUrl(
+            self.settings.server_url
+            + download_prefix
+            + quote(tag, safe="")
+            + "/"
+            + quote(asset.name, safe="")
+        )
+
+    def publish(self, release: Release) -> Release:
+        """Return the published release after all ZIPs and the index have been staged."""
         if release.draft:
             updated = Release.model_validate(
                 self._request(
@@ -279,6 +313,8 @@ class GitHubClient:
             )
             if updated.draft or updated.id != release.id or updated.tag_name != release.tag_name:
                 raise PublishError("GitHub did not publish the expected release")
+            return updated
+        return release
 
     def _check_download(
         self,
@@ -397,8 +433,23 @@ def publish_archives(
         release, assets, "index.json", index_bytes, "application/json"
     )
     # Stage index before publishing so an immutable release can contain it.
-    client.publish(release)
-    for asset, data in [*verified_assets, (index_asset, index_bytes)]:
+    published = client.publish(release)
+    staged_assets = [*verified_assets, (index_asset, index_bytes)]
+    if release.draft:
+        # Temporary draft URLs are predictions. Require GitHub to confirm the
+        # same assets and final URLs after publication, before public downloads.
+        published_assets = client.assets(published)
+        if set(published_assets) != expected_names:
+            raise PublishError("Published release assets differ from the staged assets")
+        for staged, data in staged_assets:
+            actual = client.ensure_asset(
+                published, published_assets, staged.name, data, staged.content_type
+            )
+            if actual.id != staged.id or actual.browser_download_url != staged.browser_download_url:
+                raise PublishError(
+                    f"Published asset {staged.name} differs from its staged identity"
+                )
+    for asset, data in staged_assets:
         client.verify_public(asset, data)
     index_path.parent.mkdir(parents=True, exist_ok=True)
     with index_path.open("xb") as output:
