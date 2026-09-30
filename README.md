@@ -2,6 +2,16 @@
 
 Agent skills for building MailWebhook routes, matching rules, transform pipelines, and custom JSON payloads.
 
+## About MailWebhook
+
+[MailWebhook](https://www.mailwebhook.com/email-to-webhook) turns inbound email
+into structured JSON webhooks for your application. It connects to Gmail,
+Microsoft 365, IMAP, or hosted mailboxes, parses and normalizes messages, extracts
+fields, and delivers custom JSON payloads to your endpoints with signed webhooks.
+
+The skills in this repository help coding agents author the rules and pipelines
+that select incoming emails and shape the JSON your application receives.
+
 ## Install
 
 With Node.js and npm installed, run this from your project directory:
