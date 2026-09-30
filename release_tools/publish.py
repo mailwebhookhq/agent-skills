@@ -11,9 +11,15 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 import requests
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, TypeAdapter, field_validator
 
-from release_tools.models import ArchiveArtifact, DiscoveryEntry, DiscoveryIndex
+from release_tools.models import (
+    ArchiveArtifact,
+    DiscoveryEntry,
+    DiscoveryIndex,
+    PluginArchiveArtifact,
+    ReleaseArtifact,
+)
 
 
 class PublishError(RuntimeError):
@@ -78,7 +84,7 @@ def content_digest(data: bytes) -> str:
 def validate_tag(tag: str) -> str:
     """Accept a portable version tag without ambiguous path or ref syntax."""
     if (
-        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", tag)
+        not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", tag)
         or ".." in tag
         or tag.endswith((".", ".lock"))
     ):
@@ -181,7 +187,7 @@ class GitHubClient:
                     "name": tag,
                     "draft": True,
                     "prerelease": False,
-                    "body": "Individual MailWebhook skill ZIPs and their discovery index.",
+                    "body": "MailWebhook release packages and their skill discovery index.",
                 },
             )
         )
@@ -377,7 +383,7 @@ class GitHubClient:
 
 def publish_archives(
     client: GitHubClient,
-    artifacts: list[ArchiveArtifact],
+    artifacts: list[ReleaseArtifact],
     archive_dir: Path,
     tag: str,
     index_path: Path,
@@ -386,7 +392,7 @@ def publish_archives(
 
     Args:
         client: Authenticated client with a separate anonymous download session.
-        artifacts: Validated manifest records from the archive builder.
+        artifacts: Skill archive records and an optional plugin archive record.
         archive_dir: Directory holding the already-finalized ZIP files.
         tag: Existing version tag identifying this release.
         index_path: New output path for the verified manual website handoff.
@@ -398,15 +404,25 @@ def publish_archives(
         PublishError: If bytes, assets, visibility, or public verification disagree.
         ValueError: If a manifest is empty, duplicated, or output already exists.
     """
-    if not artifacts or len({item.name for item in artifacts}) != len(artifacts):
+    validate_tag(tag)
+    adapter = TypeAdapter(ReleaseArtifact)
+    artifacts = [adapter.validate_python(item.model_dump()) for item in artifacts]
+    skills = [item for item in artifacts if isinstance(item, ArchiveArtifact)]
+    plugins = [item for item in artifacts if isinstance(item, PluginArchiveArtifact)]
+    if not skills or len({item.name for item in skills}) != len(skills):
         raise ValueError("Manifest must contain unique skill names")
+    if len(plugins) > 1:
+        raise ValueError("Manifest must contain at most one plugin archive")
+    if len({item.filename for item in artifacts}) != len(artifacts):
+        raise ValueError("Manifest archive filenames must be unique")
+    if plugins and plugins[0].version != tag.removeprefix("v"):
+        raise ValueError("Plugin version must match the release tag")
     if index_path.exists() or index_path.is_symlink():
         raise ValueError("Index output already exists; choose a new handoff path")
     # Read and validate once. These exact buffers are uploaded and hashed; no ZIP
     # is regenerated or reopened after the bytes have been accepted here.
-    pending: list[tuple[ArchiveArtifact, bytes]] = []
-    for artifact in sorted(artifacts, key=lambda item: item.name):
-        artifact = ArchiveArtifact.model_validate(artifact.model_dump())
+    pending: list[tuple[ReleaseArtifact, bytes]] = []
+    for artifact in sorted(artifacts, key=lambda item: item.filename):
         path = archive_dir / artifact.filename
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"Archive is not a regular file: {artifact.filename}")
@@ -424,14 +440,15 @@ def publish_archives(
     verified_assets: list[tuple[Asset, bytes]] = []
     for artifact, data in pending:
         asset = client.ensure_asset(release, assets, artifact.filename, data, "application/zip")
-        entries.append(
-            DiscoveryEntry(
-                name=artifact.name,
-                description=artifact.description,
-                url=asset.browser_download_url,
-                digest=content_digest(data),
+        if isinstance(artifact, ArchiveArtifact):
+            entries.append(
+                DiscoveryEntry(
+                    name=artifact.name,
+                    description=artifact.description,
+                    url=asset.browser_download_url,
+                    digest=content_digest(data),
+                )
             )
-        )
         verified_assets.append((asset, data))
     index = DiscoveryIndex(skills=entries)
     index_bytes = (

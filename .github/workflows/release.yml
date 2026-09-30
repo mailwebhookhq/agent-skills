@@ -46,7 +46,7 @@ jobs:
           python -m ruff format --check .
           python -m pytest
       - name: Build final ZIP files
-        run: python -m release_tools build
+        run: python -m release_tools build --plugin plugin.json --tag "$RELEASE_TAG"
       - name: Publish and verify public release assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -65,9 +65,11 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
           ## Verified skill release
 
-          Every skill ZIP and the release index are publicly downloadable and verified.
+          Every skill ZIP, mailwebhook-plugin.zip, and the release index are publicly downloadable and verified.
           Download `index.json` from this run's artifact or the release assets.
           Manually publish its contents at the website's `/.well-known/agent-skills/index.json`.
           Preserve any unrelated skills already listed on the website when merging entries.
           The digest belongs to the release ZIP bytes, not an Actions artifact wrapper.
+          Download `mailwebhook-plugin.zip` from the release for manual ChatGPT plugin upload.
+          The plugin bundle is not included in the website's skill discovery index.
           SUMMARY

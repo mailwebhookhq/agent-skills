@@ -16,7 +16,7 @@ import responses
 from pydantic import ValidationError
 from responses import matchers
 
-from release_tools.models import ArchiveArtifact
+from release_tools.models import ArchiveArtifact, PluginArchiveArtifact
 from release_tools.publish import (
     Asset,
     GitHubClient,
@@ -132,6 +132,26 @@ def archive(tmp_path: Path) -> tuple[ArchiveArtifact, bytes]:
         name="sample-skill",
         description="Author a sample MailWebhook route.",
         filename="sample-skill.zip",
+        digest=digest(data),
+        size=len(data),
+    )
+    (tmp_path / artifact.filename).write_bytes(data)
+    return artifact, data
+
+
+@pytest.fixture
+def plugin_archive(tmp_path: Path) -> tuple[PluginArchiveArtifact, bytes]:
+    """Provide a distinct plugin ZIP with its own upload digest and version."""
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as zipped:
+        zipped.writestr("plugin.json", '{"name":"mailwebhook","version":"1.2.3"}')
+        zipped.writestr("skills/sample-skill/SKILL.md", "Fixture plugin skill")
+    data = buffer.getvalue()
+    artifact = PluginArchiveArtifact(
+        name="mailwebhook",
+        description="Author MailWebhook configuration.",
+        version="1.2.3",
+        filename="mailwebhook-plugin.zip",
         digest=digest(data),
         size=len(data),
     )
@@ -296,6 +316,174 @@ def test_identical_release_retry_reuses_assets_without_reuploading(
     mutations = [call.request.method for call in http.calls if call.request.method != "GET"]
     assert mutations == (["PATCH"] if draft else [])
     assert output.read_bytes() == index_bytes(artifact)
+
+
+def test_plugin_upload_is_verified_but_excluded_from_skill_discovery(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    plugin_archive: tuple[PluginArchiveArtifact, bytes],
+    tmp_path: Path,
+) -> None:
+    """Stage both ZIP layouts before publishing while the index names only skills."""
+    artifact, data = archive
+    plugin, plugin_data = plugin_archive
+    add_prepare(http)
+    add_upload(http, artifact.filename, data)
+    add_upload(
+        http,
+        plugin.filename,
+        plugin_data,
+        result=asset_json(plugin.filename, plugin_data, asset_id=13, draft=True),
+    )
+    add_upload(http, "index.json", index_bytes(artifact))
+    add_publication(
+        http,
+        [
+            asset_json(artifact.filename, data),
+            asset_json(plugin.filename, plugin_data, asset_id=13),
+            asset_json("index.json", index_bytes(artifact)),
+        ],
+    )
+    http.get(
+        download_url(plugin.filename), body=plugin_data, content_type="application/octet-stream"
+    )
+    add_public_downloads(http, artifact, data)
+    output = tmp_path / "index.json"
+
+    result = publish_archives(client, [artifact, plugin], tmp_path, TAG, output)
+
+    assert output.read_bytes() == index_bytes(artifact)
+    assert [skill.name for skill in result.skills] == [artifact.name]
+    mutations = [call for call in http.calls if call.request.method in {"POST", "PATCH"}]
+    assert mutations[-1].request.method == "PATCH"
+    uploaded = [call.request.body for call in mutations if call.request.url.startswith(UPLOADS)]
+    assert uploaded == [plugin_data, data, index_bytes(artifact)]
+    public_calls = [call for call in http.calls if call.request.url.startswith(SERVER)]
+    assert len(public_calls) == 3
+    assert all("Authorization" not in call.request.headers for call in public_calls)
+
+
+@pytest.mark.parametrize("draft", [True, False])
+def test_plugin_release_retry_preserves_existing_assets(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    plugin_archive: tuple[PluginArchiveArtifact, bytes],
+    tmp_path: Path,
+    draft: bool,
+) -> None:
+    """Recover both bundle and standalone uploads without replacing or reuploading."""
+    artifact, data = archive
+    plugin, plugin_data = plugin_archive
+    add_prepare(
+        http,
+        existing_release=release_json(draft=draft),
+        assets=[
+            asset_json(artifact.filename, data, draft=draft),
+            asset_json(plugin.filename, plugin_data, asset_id=13, draft=draft),
+            asset_json("index.json", index_bytes(artifact), draft=draft),
+        ],
+    )
+    if draft:
+        add_publication(
+            http,
+            [
+                asset_json(artifact.filename, data),
+                asset_json(plugin.filename, plugin_data, asset_id=13),
+                asset_json("index.json", index_bytes(artifact)),
+            ],
+        )
+    http.get(
+        download_url(plugin.filename), body=plugin_data, content_type="application/octet-stream"
+    )
+    add_public_downloads(http, artifact, data)
+    output = tmp_path / "index.json"
+
+    publish_archives(client, [artifact, plugin], tmp_path, TAG, output)
+
+    mutations = [call.request.method for call in http.calls if call.request.method != "GET"]
+    assert mutations == (["PATCH"] if draft else [])
+    assert output.read_bytes() == index_bytes(artifact)
+
+
+@pytest.mark.parametrize("problem", ["corruption", "missing"])
+def test_plugin_public_verification_failure_withholds_website_index(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    plugin_archive: tuple[PluginArchiveArtifact, bytes],
+    tmp_path: Path,
+    problem: str,
+) -> None:
+    """Require the plugin download to pass even though it is absent from discovery."""
+    artifact, data = archive
+    plugin, plugin_data = plugin_archive
+    add_prepare(
+        http,
+        existing_release=release_json(draft=False),
+        assets=[
+            asset_json(artifact.filename, data),
+            asset_json(plugin.filename, plugin_data, asset_id=13),
+            asset_json("index.json", index_bytes(artifact)),
+        ],
+    )
+    corrupted = bytes([plugin_data[0] ^ 1]) + plugin_data[1:]
+    http.get(
+        download_url(plugin.filename),
+        body=corrupted,
+        status=404 if problem == "missing" else 200,
+        content_type="application/octet-stream",
+    )
+    add_public_downloads(http, artifact, data)
+    output = tmp_path / "index.json"
+
+    with pytest.raises(PublishError, match="mailwebhook-plugin.zip"):
+        publish_archives(client, [artifact, plugin], tmp_path, TAG, output)
+
+    assert not output.exists()
+    assert all(call.request.method == "GET" for call in http.calls)
+
+
+@pytest.mark.parametrize(
+    "problem", ["changed_bytes", "wrong_version", "plugin_only", "duplicate", "filename_collision"]
+)
+def test_invalid_plugin_artifact_fails_before_network(
+    http: responses.RequestsMock,
+    client: GitHubClient,
+    archive: tuple[ArchiveArtifact, bytes],
+    plugin_archive: tuple[PluginArchiveArtifact, bytes],
+    tmp_path: Path,
+    problem: str,
+) -> None:
+    """Reject stale plugin bytes and malformed release inventory before publishing."""
+    artifact, _ = archive
+    plugin, plugin_data = plugin_archive
+    if problem == "changed_bytes":
+        (tmp_path / plugin.filename).write_bytes(plugin_data + b"changed")
+    if problem == "wrong_version":
+        plugin = plugin.model_copy(update={"version": "9.9.9"})
+    artifacts = [artifact, plugin]
+    if problem == "plugin_only":
+        artifacts = [plugin]
+    elif problem == "duplicate":
+        artifacts.append(plugin)
+    elif problem == "filename_collision":
+        artifacts = [
+            ArchiveArtifact(
+                name="mailwebhook-plugin",
+                description="Conflicting skill filename.",
+                filename=plugin.filename,
+                digest=plugin.digest,
+                size=plugin.size,
+            ),
+            plugin,
+        ]
+
+    with pytest.raises((ValueError, PublishError)):
+        publish_archives(client, artifacts, tmp_path, TAG, tmp_path / "index.json")
+
+    assert not http.calls
 
 
 @pytest.mark.parametrize("existing_zip", [False, True])

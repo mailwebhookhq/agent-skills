@@ -89,8 +89,15 @@ and rankings driven by installation telemetry from the Skills CLI. The website
 discovery index below supplies versioned archives and digests to agents that use
 the site's discovery endpoint.
 
-The **Release skills** GitHub Actions workflow publishes every directory in
-`skills/` as a separate release asset. Each archive has this layout:
+The **Release skills** GitHub Actions workflow publishes two package layouts
+from the same maintained skill files:
+
+| Release asset | Purpose | Archive layout |
+| --- | --- | --- |
+| `author-mailwebhook-route-json.zip` | Website skill discovery | `SKILL.md` at the ZIP root |
+| `mailwebhook-plugin.zip` | Manual ChatGPT plugin upload | Root `plugin.json`, assets, and skills under `skills/` |
+
+Each directory in `skills/` gets its own standalone ZIP with this layout:
 
 ```text
 SKILL.md
@@ -104,19 +111,52 @@ The repository licence is included unless a skill supplies its own `LICENCE`.
 Hidden files, caches, and editor backups are excluded; symlinks are rejected.
 The skill folder name must match the `name` in its frontmatter.
 
+The plugin ZIP includes every skill and the existing MailWebhook icon:
+
+```text
+plugin.json
+LICENCE
+assets/icon.png
+skills/
+  author-mailwebhook-route-json/
+    SKILL.md
+    LICENCE
+    agents/
+    references/
+```
+
+[plugin.json](plugin.json) contains the portable identity and OpenAI listing
+metadata. The build snapshots the skill files once for both layouts. During
+release, the packaged plugin version comes from the tag with its leading `v`
+removed; the source manifest stays unchanged. Plugin releases require a semantic
+version such as `v1.2.3` or `v1.2.3-rc.1`.
+
+Download `mailwebhook-plugin.zip` from the
+[GitHub release](https://github.com/mailwebhookhq/agent-skills/releases) and use
+the skills-only upload path described in
+[OpenAI's submission guide](https://developers.openai.com/plugins/deploy/submission).
+The package includes listing text, starter prompts, and an icon, and contains no
+MCP server. Upload, developer identity verification, review, and directory
+publication are separate manual steps. Building or releasing this archive does
+not submit it to OpenAI.
+
 To publish:
 
 1. Merge and pass the checks on `main`, including the release workflow itself.
 2. Create and push a version tag, for example `v1.0.0`. Tags beginning with `v`
    trigger publication. Alternatively, run **Release skills** manually and supply
-   an existing version tag. Tags use letters, digits, dots, underscores, and
-   hyphens, beginning with a letter or digit.
+   an existing version tag. For plugin releases, use an optional `v` prefix
+   followed by a semantic version. Build metadata such as `v1.2.3+build.1` is
+   supported.
 3. Wait for the entire workflow to succeed. Download its verified `index.json`
    artifact, or the same file attached to that release.
 4. Manually publish the index at
    `https://www.mailwebhook.com/.well-known/agent-skills/index.json`. Preserve
    unrelated skills if the website already lists other entries. Verify the
    website serves the updated JSON and that its archive links are accessible.
+
+The website's `index.json` lists only standalone skill ZIPs; the plugin ZIP is
+published alongside them and is excluded from that index.
 
 The workflow builds the ZIPs once and hashes their final bytes. It uploads them
 with `application/zip` and generates the discovery index with versioned download
@@ -153,26 +193,37 @@ Use Python 3.12 or newer:
 python -m venv .venv
 .venv/bin/python -m pip install -r requirements.lock
 .venv/bin/python -m pytest
-.venv/bin/python -m release_tools build
+.venv/bin/python -m release_tools build --plugin plugin.json
 ```
 
-The build writes ZIPs and an exact-byte `manifest.json` into `dist/archives`.
+The build writes standalone skill ZIPs, `mailwebhook-plugin.zip`, and an exact-byte
+`manifest.json` into `dist/archives`. The local manifest distinguishes the plugin
+artifact from discoverable skills. Omit `--plugin` to build only standalone ZIPs.
 It performs no network requests and requires no credentials. Use a new or empty
 output directory for each build; `--output` selects another location.
 
-Publishing is a separate command and creates or publishes a GitHub release:
+The local plugin build uses the source manifest's version unless `--tag` is
+provided. For release builds, specify the same tag when building and publishing:
 
 ```sh
-.venv/bin/python -m release_tools publish --tag v1.0.0
+.venv/bin/python -m release_tools build --plugin plugin.json --tag v1.2.3 \
+  --output dist/v1.2.3
+.venv/bin/python -m release_tools publish --tag v1.2.3 --archives dist/v1.2.3
 ```
 
-It requires `GITHUB_TOKEN` and `GITHUB_REPOSITORY` (or `--repository owner/name`).
+Publishing creates or publishes a GitHub release. It requires `GITHUB_TOKEN` and
+`GITHUB_REPOSITORY` (or `--repository owner/name`).
 The repository and tag must already exist. Run it with the archives built from
 that tag. `.env.example` lists the token, repository, and HTTPS service-origin
 settings; environment files are not loaded automatically. The verified website
 index is written to `dist/website/index.json`. Select a new `--index` path if a
 previous handoff already exists. Local archive manifests and tooling stay outside
 the skill ZIPs.
+
+Plugin packaging validates the supported skills-only manifest fields, semantic
+version, referenced PNG icons, and archive paths and size limits. It follows
+[OpenAI's package layout](https://developers.openai.com/plugins/build/plugins);
+the submission portal performs its own metadata and skill checks.
 
 ## Licence
 

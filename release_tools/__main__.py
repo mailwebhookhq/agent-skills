@@ -11,8 +11,14 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from release_tools.archives import build_archives
-from release_tools.models import ArchiveArtifact
-from release_tools.publish import GitHubClient, GitHubSettings, PublishError, publish_archives
+from release_tools.models import ReleaseArtifact
+from release_tools.publish import (
+    GitHubClient,
+    GitHubSettings,
+    PublishError,
+    publish_archives,
+    validate_tag,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--skills", type=Path, default=Path("skills"))
     build.add_argument("--licence", type=Path, default=Path("LICENCE"))
     build.add_argument("--output", type=Path, default=Path("dist/archives"))
+    build.add_argument(
+        "--plugin", type=Path, help="Also bundle a portable plugin from this manifest"
+    )
+    build.add_argument("--tag", help="Set the bundled plugin version from this release tag")
     publish = commands.add_parser("publish", help="Publish and export a verified discovery index")
     publish.add_argument("--archives", type=Path, default=Path("dist/archives"))
     publish.add_argument("--index", type=Path, default=Path("dist/website/index.json"))
@@ -39,19 +49,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "build":
-            artifacts = build_archives(args.skills, args.licence, args.output)
+            if args.tag and not args.plugin:
+                raise ValueError("--tag requires --plugin when building")
+            version = validate_tag(args.tag).removeprefix("v") if args.tag else None
+            artifacts = build_archives(
+                args.skills,
+                args.licence,
+                args.output,
+                plugin_path=args.plugin,
+                plugin_version=version,
+            )
             manifest = [artifact.model_dump(mode="json") for artifact in artifacts]
             (args.output / "manifest.json").write_text(
                 json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
             )
-            print(f"Built {len(artifacts)} skill ZIP(s) in {args.output}")
+            print(f"Built {len(artifacts)} release ZIP(s) in {args.output}")
         else:
             if not args.repository:
                 raise ValueError("Set GITHUB_REPOSITORY or pass --repository owner/repository")
             token = os.environ.get("GITHUB_TOKEN", "")
             if not token:
                 raise ValueError("Set GITHUB_TOKEN to publish; local builds need no token")
-            artifacts = TypeAdapter(list[ArchiveArtifact]).validate_json(
+            artifacts = TypeAdapter(list[ReleaseArtifact]).validate_json(
                 (args.archives / "manifest.json").read_bytes()
             )
             settings = GitHubSettings(

@@ -18,6 +18,19 @@ SkillName = Annotated[
 ]
 Description = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=1024)]
 Digest = Annotated[str, StringConstraints(strict=True, pattern=r"^sha256:[0-9a-f]{64}$")]
+SemanticVersion = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        max_length=64,
+        pattern=(
+            r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+            r"(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)"
+            r"(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+            r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+        ),
+    ),
+]
 
 
 class SkillMetadata(BaseModel):
@@ -52,6 +65,28 @@ class ArchiveArtifact(SkillMetadata):
         if self.filename != f"{self.name}.zip":
             raise ValueError("filename must equal the skill name followed by '.zip'")
         return self
+
+
+class PluginArchiveArtifact(SkillMetadata):
+    """Identify a plugin ZIP separately from independently installable skills."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["plugin"] = "plugin"
+    version: SemanticVersion
+    filename: Annotated[str, StringConstraints(strict=True)]
+    digest: Digest
+    size: Annotated[int, Field(strict=True, gt=0)]
+
+    @model_validator(mode="after")
+    def filename_matches_name(self) -> "PluginArchiveArtifact":
+        """Keep plugin filenames portable and distinct from ordinary skills."""
+        if self.filename != f"{self.name}-plugin.zip":
+            raise ValueError("filename must equal the plugin name followed by '-plugin.zip'")
+        return self
+
+
+ReleaseArtifact = ArchiveArtifact | PluginArchiveArtifact
 
 
 class DiscoveryEntry(SkillMetadata):

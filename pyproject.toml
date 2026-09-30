@@ -5,9 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mailwebhook-skill-releases"
 version = "0.1.0"
-description = "Build and publish independently verifiable MailWebhook skill archives"
+description = "Build and publish independently verifiable MailWebhook skill and plugin archives"
 requires-python = ">=3.12"
 dependencies = [
+  "Pillow>=12,<13",
   "pydantic>=2.10,<3",
   "PyYAML>=6.0.2,<7",
   "requests>=2.32.4,<3",
@@ -29,4 +30,3 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-

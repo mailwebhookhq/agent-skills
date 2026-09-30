@@ -26,5 +26,5 @@ jobs:
           python -m ruff check .
           python -m ruff format --check .
           python -m pytest
-      - name: Build each skill
-        run: python -m release_tools build
+      - name: Build skill and plugin packages
+        run: python -m release_tools build --plugin plugin.json

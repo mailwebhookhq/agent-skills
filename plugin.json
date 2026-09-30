@@ -1,0 +1,34 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mailwebhook",
+  "version": "1.0.0",
+  "description": "Create and review MailWebhook routes, matching rules, transform pipelines, and custom JSON payloads.",
+  "author": {
+    "name": "MailWebhook",
+    "url": "https://www.mailwebhook.com"
+  },
+  "homepage": "https://www.mailwebhook.com",
+  "repository": "https://github.com/mailwebhookhq/agent-skills",
+  "license": "MIT",
+  "keywords": ["email", "webhooks", "routing", "json"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "MailWebhook",
+        "shortDescription": "Build email routing JSON",
+        "longDescription": "Help developers create, explain, review, and repair MailWebhook route JSON, matching rules, transform pipelines, and custom JSON payloads. Use sample emails and target JSON shapes to produce configuration. Review the generated JSON before applying it in MailWebhook.",
+        "developerName": "MailWebhook",
+        "category": "Developer Tools",
+        "capabilities": [],
+        "websiteURL": "https://www.mailwebhook.com",
+        "defaultPrompt": [
+          "Create a MailWebhook matching rule for invoice emails from a specific sender.",
+          "Build a MailWebhook pipeline that maps this email sample to my target JSON payload.",
+          "Review this MailWebhook route JSON and fix unsupported rules or pipeline expressions."
+        ],
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
+      }
+    }
+  }
+}

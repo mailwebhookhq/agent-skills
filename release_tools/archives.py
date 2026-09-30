@@ -1,18 +1,39 @@
 """Create reproducible, self-contained skill archives from validated inputs."""
 
 import hashlib
+import json
 import os
 import shutil
 import stat
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 from yaml.nodes import MappingNode
 
-from release_tools.models import ArchiveArtifact, SkillMetadata
+from release_tools.models import (
+    ArchiveArtifact,
+    PluginArchiveArtifact,
+    ReleaseArtifact,
+    SkillMetadata,
+)
+from release_tools.plugin import (
+    PluginManifest,
+    parse_plugin_manifest,
+    validate_plugin_icon,
+    validate_plugin_members,
+)
+
+
+@dataclass(frozen=True)
+class _ArchiveMember:
+    """Snapshot a source once so both package layouts contain identical bytes."""
+
+    data: bytes
+    mode: int
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -110,33 +131,97 @@ def _collect_files(skill_dir: Path) -> dict[str, Path]:
     return files
 
 
-def _write_archive(target: Path, files: dict[str, Path]) -> tuple[str, int]:
+def _snapshot_files(files: dict[str, Path]) -> dict[str, _ArchiveMember]:
+    """Read exact source bytes once while preserving only executable permissions."""
+    snapshots: dict[str, _ArchiveMember] = {}
+    for name, source in files.items():
+        details = _require_kind(source, directory=False)
+        mode = 0o755 if details.st_mode & 0o111 else 0o644
+        snapshots[name] = _ArchiveMember(source.read_bytes(), mode)
+    return snapshots
+
+
+def _write_archive(target: Path, files: dict[str, _ArchiveMember]) -> tuple[str, int]:
     """Write stable ZIP metadata and hash the resulting completed file bytes."""
     with zipfile.ZipFile(target, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for archive_name, source in sorted(files.items()):
-            details = _require_kind(source, directory=False)
             entry = zipfile.ZipInfo(archive_name, date_time=(1980, 1, 1, 0, 0, 0))
             entry.create_system = 3
             # Preserve executability while removing ownership and machine-specific permissions.
-            mode = 0o755 if details.st_mode & 0o111 else 0o644
-            entry.external_attr = (stat.S_IFREG | mode) << 16
+            entry.external_attr = (stat.S_IFREG | source.mode) << 16
             entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(entry, source.read_bytes(), compresslevel=9)
+            archive.writestr(entry, source.data, compresslevel=9)
     with target.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     return f"sha256:{digest}", target.stat().st_size
 
 
-def build_archives(skills_dir: Path, licence_path: Path, output_dir: Path) -> list[ArchiveArtifact]:
-    """Build one self-contained ZIP for every immediate skill directory.
+def _reject_symlink_ancestors(path: Path, root: Path) -> None:
+    """Reject links within a selected root while allowing system aliases above it."""
+    _require_kind(root, directory=True)
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"plugin paths must not contain symlink ancestors: {current}")
+
+
+def _prepare_plugin(
+    plugin_path: Path, licence_path: Path, version: str | None
+) -> tuple[PluginManifest, dict[str, _ArchiveMember]]:
+    """Validate the manifest and snapshot only its explicitly referenced assets."""
+    if plugin_path.name != "plugin.json":
+        raise ValueError("plugin manifest must be named plugin.json")
+    _reject_symlink_ancestors(plugin_path, plugin_path.parent)
+    _require_kind(plugin_path, directory=False)
+    manifest = parse_plugin_manifest(plugin_path.read_bytes(), version)
+    interface = manifest.extensions.openai.interface
+    paths = {"LICENCE": licence_path}
+    for icon in (interface.composer_icon, interface.logo):
+        relative = icon[2:]
+        path = plugin_path.parent / relative
+        _reject_symlink_ancestors(path, plugin_path.parent)
+        details = _require_kind(path, directory=False)
+        if details.st_size > 5 * 1024 * 1024:
+            raise ValueError("plugin icons must not exceed 5 MiB")
+        paths[relative] = path
+    files = _snapshot_files(paths)
+    for name, member in files.items():
+        if name != "LICENCE":
+            validate_plugin_icon(member.data)
+    files["plugin.json"] = _ArchiveMember(
+        (
+            json.dumps(
+                manifest.model_dump(mode="json", by_alias=True, exclude_none=True),
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8"),
+        0o644,
+    )
+    return manifest, files
+
+
+def build_archives(
+    skills_dir: Path,
+    licence_path: Path,
+    output_dir: Path,
+    *,
+    plugin_path: Path | None = None,
+    plugin_version: str | None = None,
+) -> list[ReleaseArtifact]:
+    """Build independent skill ZIPs and an optional plugin from the same skill files.
 
     Args:
         skills_dir: Directory whose visible child directories are skills.
         licence_path: Repository licence copied unless a skill has its own LICENCE.
         output_dir: Missing or empty destination outside the skills tree.
+        plugin_path: Optional root plugin.json defining a skills-only plugin ZIP.
+        plugin_version: Optional SemVer override applied only in that plugin ZIP.
 
     Returns:
-        Validated metadata and digests for the completed archives, sorted by name.
+        Skill artifacts sorted by name, followed by the optional plugin artifact.
 
     Raises:
         ValueError: Inputs, metadata, filenames, or output placement are invalid.
@@ -145,6 +230,10 @@ def build_archives(skills_dir: Path, licence_path: Path, output_dir: Path) -> li
     for value in (skills_dir, licence_path, output_dir):
         if not isinstance(value, Path):
             raise ValueError("archive paths must be pathlib.Path instances")
+    if plugin_path is not None and not isinstance(plugin_path, Path):
+        raise ValueError("plugin path must be a pathlib.Path instance")
+    if plugin_path is None and plugin_version is not None:
+        raise ValueError("plugin_version requires a plugin_path")
     _require_kind(skills_dir, directory=True)
     _require_kind(licence_path, directory=False)
     resolved_skills = skills_dir.resolve()
@@ -178,17 +267,61 @@ def build_archives(skills_dir: Path, licence_path: Path, output_dir: Path) -> li
     if not prepared:
         raise ValueError("skills directory must contain at least one skill")
 
+    plugin_manifest: PluginManifest | None = None
+    plugin_files: dict[str, _ArchiveMember] = {}
+    if plugin_path is not None:
+        plugin_manifest, plugin_files = _prepare_plugin(plugin_path, licence_path, plugin_version)
+        if any(metadata.name == f"{plugin_manifest.name}-plugin" for metadata, _ in prepared):
+            raise ValueError("plugin and skill artifact filenames must not conflict")
+        for metadata, _files in prepared:
+            if len(f"{plugin_manifest.name}:{metadata.name}") > 64:
+                raise ValueError("combined plugin:skill name must not exceed 64 characters")
+        # Validate metadata sizes before loading skill files into memory.
+        sizes = {name: len(member.data) for name, member in plugin_files.items()}
+        for metadata, files in prepared:
+            sizes.update(
+                {
+                    f"skills/{metadata.name}/{name}": _require_kind(source, directory=False).st_size
+                    for name, source in files.items()
+                }
+            )
+        validate_plugin_members(sizes)
+
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".skill-archives-", dir=output_dir.parent))
-    artifacts: list[ArchiveArtifact] = []
+    artifacts: list[ReleaseArtifact] = []
     try:
         for metadata, files in prepared:
             filename = f"{metadata.name}.zip"
-            digest, size = _write_archive(staging / filename, files)
+            snapshots = _snapshot_files(files)
+            digest, size = _write_archive(staging / filename, snapshots)
             artifacts.append(
                 ArchiveArtifact(
                     name=metadata.name,
                     description=metadata.description,
+                    filename=filename,
+                    digest=digest,
+                    size=size,
+                )
+            )
+            if plugin_manifest is not None:
+                plugin_files.update(
+                    {f"skills/{metadata.name}/{name}": member for name, member in snapshots.items()}
+                )
+        if plugin_manifest is not None:
+            # Check exact buffered sizes too, in case a source changed after stat().
+            validate_plugin_members(
+                {name: len(member.data) for name, member in plugin_files.items()}
+            )
+            filename = f"{plugin_manifest.name}-plugin.zip"
+            digest, size = _write_archive(staging / filename, plugin_files)
+            if size > 100_000_000:
+                raise ValueError("plugin ZIP must not exceed 100 MB compressed")
+            artifacts.append(
+                PluginArchiveArtifact(
+                    name=plugin_manifest.name,
+                    description=plugin_manifest.description,
+                    version=plugin_manifest.version,
                     filename=filename,
                     digest=digest,
                     size=size,
