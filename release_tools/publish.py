@@ -326,15 +326,23 @@ class GitHubClient:
         *,
         headers: dict[str, str] | None = None,
     ) -> None:
-        """Hash streamed bytes and reject wrong media types, truncation, or excess bytes."""
+        """Verify streamed bytes, accepting the stored MIME type or generic binary delivery."""
         try:
             with session.get(url, headers=headers, timeout=(10, 60), stream=True) as response:
                 response.raise_for_status()
                 if urlsplit(response.url).scheme != "https":
                     raise PublishError("Asset download redirected to a non-HTTPS URL")
-                actual_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
-                if media_type and actual_type != media_type:
-                    raise PublishError("Public asset has an unexpected Content-Type")
+                actual_type = (
+                    response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                )
+                # GitHub's CDN can serve both ZIP and JSON as generic binary.
+                # ensure_asset still requires the exact stored upload MIME type;
+                # size and digest below bind the downloaded body to those bytes.
+                if media_type and actual_type not in {media_type, "application/octet-stream"}:
+                    raise PublishError(
+                        f"Unexpected Content-Type {actual_type[:100]!r}; "
+                        f"expected {media_type!r} or 'application/octet-stream'"
+                    )
                 hasher = hashlib.sha256()
                 received = 0
                 for chunk in response.iter_content(chunk_size=65536):
@@ -361,9 +369,9 @@ class GitHubClient:
                     asset.content_type,
                 )
                 return
-            except PublishError:
+            except PublishError as exc:
                 if attempt + 1 == attempts:
-                    raise
+                    raise PublishError(f"Public asset {asset.name}: {exc}") from exc
                 time.sleep(2)
 
 

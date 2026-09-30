@@ -193,12 +193,12 @@ def add_public_downloads(
     *,
     manifest_bytes: bytes | None = None,
 ) -> None:
-    """Provide final anonymous downloads for both the ZIP and generated index."""
-    http.get(download_url(artifact.filename), body=data, content_type="application/zip")
+    """Model GitHub's generic CDN media type independently of stored asset metadata."""
+    http.get(download_url(artifact.filename), body=data, content_type="application/octet-stream")
     http.get(
         download_url("index.json"),
         body=manifest_bytes or index_bytes(artifact),
-        content_type="application/json",
+        content_type="application/octet-stream",
     )
 
 
@@ -526,6 +526,7 @@ def test_upload_server_digest_mismatch_prevents_publishing(
     assert not any(call.request.method == "PATCH" for call in http.calls)
 
 
+@pytest.mark.parametrize("download_type", ["application/zip", "application/octet-stream"])
 @pytest.mark.parametrize("problem", ["corruption", "truncated", "oversized", "mime", "404"])
 def test_public_verification_failure_never_exports_index(
     http: responses.RequestsMock,
@@ -533,6 +534,7 @@ def test_public_verification_failure_never_exports_index(
     archive: tuple[ArchiveArtifact, bytes],
     tmp_path: Path,
     problem: str,
+    download_type: str,
 ) -> None:
     """Withhold the website handoff until anonymous downloads match bytes and media."""
     artifact, data = archive
@@ -548,7 +550,7 @@ def test_public_verification_failure_never_exports_index(
         download_url(artifact.filename),
         body=body,
         status=404 if problem == "404" else 200,
-        content_type="text/html" if problem == "mime" else "application/zip",
+        content_type="text/html" if problem == "mime" else download_type,
     )
     output = tmp_path / "index.json"
     with pytest.raises(PublishError):
@@ -559,35 +561,39 @@ def test_public_verification_failure_never_exports_index(
     assert all("Authorization" not in call.request.headers for call in public_calls)
 
 
+@pytest.mark.parametrize("download_type", ["application/json", "application/octet-stream"])
 def test_public_index_corruption_also_withholds_handoff(
     http: responses.RequestsMock,
     client: GitHubClient,
     archive: tuple[ArchiveArtifact, bytes],
     tmp_path: Path,
+    download_type: str,
 ) -> None:
     """Verify the published discovery index itself before exporting its local copy."""
     artifact, data = archive
     add_new_release(http, artifact, data)
     http.get(download_url(artifact.filename), body=data, content_type="application/zip")
-    http.get(download_url("index.json"), body=b"{}", content_type="application/json")
+    http.get(download_url("index.json"), body=b"{}", content_type=download_type)
     output = tmp_path / "index.json"
     with pytest.raises(PublishError):
         publish_archives(client, [artifact], tmp_path, TAG, output)
     assert not output.exists()
 
 
+@pytest.mark.parametrize("download_type", ["application/zip", "application/octet-stream"])
 def test_public_redirects_never_include_authorization(
     http: responses.RequestsMock,
     client: GitHubClient,
     archive: tuple[ArchiveArtifact, bytes],
     tmp_path: Path,
+    download_type: str,
 ) -> None:
     """Follow GitHub asset CDN redirects without exposing the API token."""
     artifact, data = archive
     add_new_release(http, artifact, data)
     cdn = "https://release-assets.githubusercontent.com/example/sample-skill.zip?signature=test"
     http.get(download_url(artifact.filename), status=302, headers={"Location": cdn})
-    http.get(cdn, body=data, content_type="application/zip")
+    http.get(cdn, body=data, content_type=download_type)
     http.get(
         download_url("index.json"), body=index_bytes(artifact), content_type="application/json"
     )
@@ -595,6 +601,45 @@ def test_public_redirects_never_include_authorization(
     for call in http.calls:
         if call.request.url.startswith((SERVER, "https://release-assets.githubusercontent.com")):
             assert "Authorization" not in call.request.headers
+
+
+@pytest.mark.parametrize("filename", ["sample.zip", "index.json"])
+@pytest.mark.parametrize("generic", [True, False])
+def test_public_mime_type_allows_parameters_and_case_variation(
+    http: responses.RequestsMock, client: GitHubClient, filename: str, generic: bool
+) -> None:
+    """Parse MIME tokens without confusing case or parameters with a different type."""
+    data = b"fixture bytes"
+    asset = Asset.model_validate(asset_json(filename, data))
+    mime = "application/octet-stream" if generic else asset.content_type
+    http.get(
+        download_url(filename),
+        body=data,
+        headers={"Content-Type": f"{mime.upper()} ; charset=utf-8"},
+    )
+
+    client.verify_public(asset, data, attempts=1)
+
+    assert len(http.calls) == 1
+    assert "Authorization" not in http.calls[0].request.headers
+
+
+@pytest.mark.parametrize("filename", ["sample.zip", "index.json"])
+@pytest.mark.parametrize("mime", ["", "text/html", "text/plain", "image/png"])
+def test_public_mime_type_failure_identifies_asset_and_received_type(
+    http: responses.RequestsMock, client: GitHubClient, filename: str, mime: str
+) -> None:
+    """Reject unrelated or missing MIME types even when their response bytes match."""
+    data = b"fixture bytes"
+    asset = Asset.model_validate(asset_json(filename, data))
+    http.get(download_url(filename), body=data, headers={"Content-Type": mime})
+
+    with pytest.raises(PublishError) as error:
+        client.verify_public(asset, data, attempts=1)
+
+    assert f"Public asset {filename}" in str(error.value)
+    assert f"Unexpected Content-Type {mime!r}" in str(error.value)
+    assert f"expected {asset.content_type!r}" in str(error.value)
 
 
 @pytest.mark.parametrize(

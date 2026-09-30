@@ -66,8 +66,10 @@ URLs, `sha256:` digests, and descriptions from skill frontmatter. ZIPs and
 `index.json` are staged in a draft before publication, supporting immutable
 releases. When GitHub returns temporary `untagged-*` draft URLs, the staged index
 uses their final version-tag URLs. After publishing, the workflow refreshes asset
-metadata and confirms the final URLs and asset identities. It then downloads
-every asset without authentication and checks its content type, size, and digest.
+metadata and confirms the final URLs and asset identities. Uploads and stored
+asset metadata must use `application/zip` for ZIPs and `application/json` for the
+index. Anonymous downloads accept that media type or GitHub's generic
+`application/octet-stream` response, and must match the exact size and digest.
 Only successful verification exports the website handoff artifact. The website
 is not updated automatically.
 
