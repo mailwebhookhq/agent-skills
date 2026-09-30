@@ -46,6 +46,8 @@ def manifest() -> dict[str, Any]:
                     "developerName": "MailWebhook",
                     "category": "Developer Tools",
                     "websiteURL": "https://www.mailwebhook.com",
+                    "privacyPolicyURL": "https://www.mailwebhook.com/privacy",
+                    "termsOfServiceURL": "https://www.mailwebhook.com/terms",
                     "composerIcon": "./assets/icon.png",
                     "logo": "./assets/icon.png",
                     "defaultPrompt": [
@@ -272,6 +274,50 @@ def test_listing_contract_rejects_invalid_values(
     manifest["extensions"]["com.openai"]["interface"][field] = value
     with pytest.raises(ValidationError):
         parse_plugin_manifest(json.dumps(manifest).encode())
+
+
+@pytest.mark.parametrize("field", ["websiteURL", "privacyPolicyURL", "termsOfServiceURL"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "not-a-url",
+        "http://example.com/policy",
+        "https://user:secret@example.com/policy",
+        "https://user@example.com/policy",
+        "https://example.com/" + "x" * 1005,
+        123,
+    ],
+)
+def test_listing_urls_reject_invalid_values(
+    manifest: dict[str, Any], field: str, value: Any
+) -> None:
+    """Apply the same HTTPS, credential, and length rules to all listing URLs."""
+    manifest["extensions"]["com.openai"]["interface"][field] = value
+    with pytest.raises(ValidationError):
+        parse_plugin_manifest(json.dumps(manifest).encode())
+
+
+@pytest.mark.parametrize("field", ["websiteURL", "privacyPolicyURL", "termsOfServiceURL"])
+def test_listing_urls_accept_maximum_length(manifest: dict[str, Any], field: str) -> None:
+    """Preserve valid HTTPS listing URLs at the documented 1024-character limit."""
+    prefix = "https://example.com/"
+    value = prefix + "x" * (1024 - len(prefix))
+    manifest["extensions"]["com.openai"]["interface"][field] = value
+    parsed = parse_plugin_manifest(json.dumps(manifest).encode())
+    serialized = json.loads(parsed.model_dump_json(by_alias=True, exclude_none=True))
+    assert serialized["extensions"]["com.openai"]["interface"][field] == value
+
+
+def test_policy_links_can_be_omitted_from_skills_only_manifest(manifest: dict[str, Any]) -> None:
+    """Keep upload validation distinct from the public directory's policy requirement."""
+    interface = manifest["extensions"]["com.openai"]["interface"]
+    del interface["privacyPolicyURL"]
+    del interface["termsOfServiceURL"]
+    parsed = parse_plugin_manifest(json.dumps(manifest).encode())
+    serialized = json.loads(parsed.model_dump_json(by_alias=True, exclude_none=True))
+    assert "privacyPolicyURL" not in serialized["extensions"]["com.openai"]["interface"]
+    assert "termsOfServiceURL" not in serialized["extensions"]["com.openai"]["interface"]
 
 
 @pytest.mark.parametrize(

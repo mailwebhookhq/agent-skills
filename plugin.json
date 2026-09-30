@@ -20,7 +20,9 @@
         "developerName": "MailWebhook",
         "category": "Developer Tools",
         "capabilities": [],
-        "websiteURL": "https://www.mailwebhook.com",
+        "websiteURL": "https://www.mailwebhook.com/",
+        "privacyPolicyURL": "https://www.mailwebhook.com/privacy",
+        "termsOfServiceURL": "https://www.mailwebhook.com/terms",
         "defaultPrompt": [
           "Create a MailWebhook matching rule for invoice emails from a specific sender.",
           "Build a MailWebhook pipeline that maps this email sample to my target JSON payload.",

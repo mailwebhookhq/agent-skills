@@ -50,6 +50,11 @@ HttpsUrl = Annotated[
     UrlConstraints(allowed_schemes=["https"], max_length=2048),
     AfterValidator(_public_url),
 ]
+ListingHttpsUrl = Annotated[
+    HttpUrl,
+    UrlConstraints(allowed_schemes=["https"], max_length=1024),
+    AfterValidator(_public_url),
+]
 
 
 def _asset_path(value: str) -> str:
@@ -108,11 +113,9 @@ class PluginInterface(_PluginModel):
     capabilities: Annotated[
         list[Annotated[ListingText, Field(max_length=120)]], Field(max_length=20)
     ] = Field(default_factory=list)
-    website_url: Annotated[
-        HttpUrl,
-        UrlConstraints(allowed_schemes=["https"], max_length=1024),
-        AfterValidator(_public_url),
-    ] = Field(alias="websiteURL")
+    website_url: ListingHttpsUrl = Field(alias="websiteURL")
+    privacy_policy_url: ListingHttpsUrl | None = Field(default=None, alias="privacyPolicyURL")
+    terms_of_service_url: ListingHttpsUrl | None = Field(default=None, alias="termsOfServiceURL")
     composer_icon: IconPath = Field(alias="composerIcon")
     logo: IconPath
     default_prompt: Annotated[

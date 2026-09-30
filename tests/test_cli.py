@@ -82,6 +82,10 @@ def test_build_plugin_uses_tag_version_and_publish_reads_both_artifact_types(
     ):
         packaged = json.loads(plugin.read("plugin.json"))
         assert packaged["version"] == "2.3.4-rc.1+build.5"
+        interface = packaged["extensions"]["com.openai"]["interface"]
+        assert interface["websiteURL"] == "https://www.mailwebhook.com/"
+        assert interface["privacyPolicyURL"] == "https://www.mailwebhook.com/privacy"
+        assert interface["termsOfServiceURL"] == "https://www.mailwebhook.com/terms"
         assert "SKILL.md" not in plugin.namelist()
         assert "assets/icon.png" in plugin.namelist()
         assert "LICENCE" in plugin.namelist()

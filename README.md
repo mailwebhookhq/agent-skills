@@ -140,6 +140,20 @@ MCP server. Upload, developer identity verification, review, and directory
 publication are separate manual steps. Building or releasing this archive does
 not submit it to OpenAI.
 
+The listing links to MailWebhook's [privacy policy](https://www.mailwebhook.com/privacy)
+and [terms of service](https://www.mailwebhook.com/terms). The build validates these
+URLs as HTTPS, without embedded credentials, and at most 1024 characters long.
+OpenAI's [public directory guidelines](https://developers.openai.com/plugins/plugin-guidelines#privacy)
+require a published privacy policy, even though skills-only upload validation
+allows the policy URL to be omitted. The terms URL is optional for this
+skills-only package; both links are included in the manifest.
+
+Before public submission, complete the [plugin privacy section draft](docs/plugin-privacy.md)
+and publish it on the existing privacy-policy page. The draft distinguishes the
+static package's behavior from ChatGPT processing and separately requested
+MailWebhook service use. Confirm any publisher analytics before publishing that
+section. This repository's release workflow does not change either policy page.
+
 To publish:
 
 1. Merge and pass the checks on `main`, including the release workflow itself.
