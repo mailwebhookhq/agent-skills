@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mailwebhook-skill-releases"
+version = "0.1.0"
+description = "Build and publish independently verifiable MailWebhook skill archives"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.10,<3",
+  "PyYAML>=6.0.2,<7",
+  "requests>=2.32.4,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "responses>=0.25,<1", "ruff>=0.11,<1"]
+
+[tool.setuptools]
+packages = ["release_tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
