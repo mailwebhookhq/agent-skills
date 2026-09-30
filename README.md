@@ -2,6 +2,46 @@
 
 Agent skills for building MailWebhook routes, matching rules, transform pipelines, and custom JSON payloads.
 
+## Install
+
+With Node.js and npm installed, run this from your project directory:
+
+```sh
+npx skills add mailwebhookhq/agent-skills \
+  --skill author-mailwebhook-route-json
+```
+
+The [Skills CLI](https://github.com/vercel-labs/skills) downloads the skill from
+GitHub. Follow its prompts to select your coding agent. Supported agents include
+Claude Code, Codex, Cursor, and GitHub Copilot. Installation defaults to the
+current project; add `--global` to make the skill available across projects.
+
+Other installation options:
+
+```sh
+# List available skills without installing
+npx skills add mailwebhookhq/agent-skills --list
+
+# Install for Claude Code
+npx skills add mailwebhookhq/agent-skills \
+  --skill author-mailwebhook-route-json --agent claude-code
+
+# Install across projects
+npx skills add mailwebhookhq/agent-skills \
+  --skill author-mailwebhook-route-json --global
+```
+
+To update an installed copy:
+
+```sh
+npx skills update author-mailwebhook-route-json
+```
+
+See the [CLI reference](https://github.com/vercel-labs/skills#options) for agent
+selection and scope options. GitHub installation reads this repository directly;
+the [release archives and website index](#skill-releases) provide another
+discovery route.
+
 ## Available skills
 
 | Skill | Description |
@@ -15,21 +55,39 @@ checking matching behavior and emitted payloads.
 
 ## Using the skill
 
-Make the skill available in your agent's skill environment, then ask it to use
-`author-mailwebhook-route-json`. Provide the matching intent, representative
-email content, and desired output shape. For a complete route, include the
-destination endpoint ID; for an update, include the existing configuration.
+After installation, ask your agent to use `author-mailwebhook-route-json`.
+Provide the matching intent, representative email content, and desired output
+shape. For a complete route, include the destination endpoint ID; for an update,
+include the existing configuration.
 
-Example request:
+**Matching rule**
 
-> Use author-mailwebhook-route-json to build a route that matches invoices from
-> vendor.example and emits the subject, sender address, and extracted order ID.
-> Here is a sample email and the destination endpoint ID.
+> Use author-mailwebhook-route-json to write a matching rule for emails from
+> billing@example.com whose subject contains "Invoice". Return the rule JSON
+> and explain which of these sample emails should match.
+
+**Custom JSON pipeline**
+
+> Use author-mailwebhook-route-json to build a pipeline that extracts invoice
+> number, total, and currency from these email samples. Emit
+> {"invoice_number": "INV-1042", "total": 125.50, "currency": "USD"}, with a
+> numeric total and null for missing values. Here are the sample emails.
+
+**Route review and repair**
+
+> Use author-mailwebhook-route-json to review this route JSON against these
+> sample emails and expected payloads. Fix unsupported rule keys and pipeline
+> expressions, preserve unrelated settings, and explain each correction.
 
 The skill can return a complete route or an individual rule, pipeline, or mapper
 configuration. Authoring configuration does not publish a route or send a webhook.
 
 ## Skill releases
+
+The [skills.sh FAQ](https://www.skills.sh/docs/faq) describes directory listings
+and rankings driven by installation telemetry from the Skills CLI. The website
+discovery index below supplies versioned archives and digests to agents that use
+the site's discovery endpoint.
 
 The **Release skills** GitHub Actions workflow publishes every directory in
 `skills/` as a separate release asset. Each archive has this layout:
