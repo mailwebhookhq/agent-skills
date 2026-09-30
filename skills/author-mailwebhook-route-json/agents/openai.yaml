@@ -1,0 +1,4 @@
+interface:
+  display_name: "MailWebhook Route JSON"
+  short_description: "Author MailWebhook rules and custom JSON pipelines"
+  default_prompt: "Use $author-mailwebhook-route-json to draft a MailWebhook route with a matching rule and a custom JSON pipeline."

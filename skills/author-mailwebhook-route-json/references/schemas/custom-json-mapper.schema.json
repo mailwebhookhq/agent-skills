@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.mailwebhook.dev/transform/custom_json_mapper@1",
+  "title": "mailwebhook custom_json mapper config v1",
+  "description": "Validates the JsonLogic-style configuration passed to map.custom_json.",
+  "type": "object",
+  "required": ["version", "output"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "v1" },
+    "vars": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["name", "expr"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+          "expr": { "$ref": "#/$defs/expr" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "output": { "$ref": "#/$defs/jsonTemplate" },
+    "meta": { "type": "object" }
+  },
+  "$defs": {
+    "jsonTemplate": {
+      "description": "Arbitrary JSON where any value may be a literal or an expression",
+      "anyOf": [
+        { "$ref": "#/$defs/expr" },
+        { "type": ["string", "number", "boolean", "null"] },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/jsonTemplate" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonTemplate" }
+        }
+      ]
+    },
+    "expr": {
+      "description": "JsonLogic-style expression or literal",
+      "oneOf": [
+        { "type": ["string", "number", "boolean", "null"] },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/expr" }
+        },
+        {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "patternProperties": {
+            "^(var|if|and|or|!|==|!=|===|!==|>|>=|<|<=|in|cat|substr|merge|string\\.lower|string\\.upper|string\\.trim|string\\.slice|string\\.split|string\\.join|string\\.replace|regex\\.match|regex\\.replace|map|filter|find|reduce|some|all|none)$": {
+              "description": "Supported operators for map.custom_json",
+              "type": ["array", "object", "string", "number", "boolean", "null"]
+            },
+            "^call$": {
+              "type": "object",
+              "required": ["fn"],
+              "additionalProperties": false,
+              "properties": {
+                "fn": {
+                  "type": "string",
+                  "enum": [
+                    "transform.html_to_text",
+                    "extract.urls",
+                    "extract.bullet_list",
+                    "extract.reply_segments",
+                    "extract.key_value_pairs",
+                    "extract.tables",
+                    "extract.dom"
+                  ]
+                },
+                "args": { "type": "object" }
+              }
+            },
+            "^call\\.(transform\\.html_to_text|extract\\.urls|extract\\.bullet_list|extract\\.reply_segments|extract\\.key_value_pairs|extract\\.tables|extract\\.dom)$": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}
